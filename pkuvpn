@@ -114,7 +114,7 @@ _start() {
 
 	echo "连接 PKU VPN..."
 	echo "日志保存到: $log_file"
-	echo "请在提示后输入 Token Code，为手机号的4-7位"
+	echo "如果提示输入 Token Code，请输入手机号的4-7位"
 	echo "按 Ctrl+C 断开连接"
 	echo ""
 	
