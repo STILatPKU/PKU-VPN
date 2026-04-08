@@ -1,0 +1,173 @@
+#!/bin/zsh
+
+# PKU-VPN command wrapper
+# A unified interface for VPN operations
+# 
+# Usage: pkuvpn [command]
+# Commands: setup, set-sudo-nopasswd, start, stop
+
+set -e
+
+PKUVPN_KEYCHAIN_USER_SERVICE="PKU-VPN-IAAA-USER"
+PKUVPN_KEYCHAIN_PASS_SERVICE="PKU-VPN-IAAA-PASS"
+
+main() {
+	local command="${1:-}"
+
+	case "$command" in
+		setup)
+			_setup
+			;;
+		set-sudo-nopasswd)
+			_set_sudo_nopasswd
+			;;
+		start)
+			_start
+			;;
+		stop)
+			_stop
+			;;
+		"")
+			_show_help
+			return 1
+			;;
+		*)
+			echo "Error: Unknown command '$command'"
+			_show_help
+			return 1
+			;;
+	esac
+}
+
+_show_help() {
+	echo "Usage: pkuvpn [command]"
+	echo ""
+	echo "Commands:"
+	echo "  setup                  Set up IAAA credentials in macOS keychain"
+	echo "  set-sudo-nopasswd      Configure password-less sudo for openconnect"
+	echo "  start                  Start VPN connection"
+	echo "  stop                   Stop VPN connection"
+}
+
+_setup() {
+	local pku_user
+	local pku_pass
+
+	read "pku_user?PKU IAAA 用户名: "
+	read -s "pku_pass?PKU IAAA 密码(将保存到 macOS 钥匙串): "
+	echo
+
+	security add-generic-password -U -a "$USER" -s "$PKUVPN_KEYCHAIN_USER_SERVICE" -w "$pku_user" >/dev/null
+	security add-generic-password -U -a "$USER" -s "$PKUVPN_KEYCHAIN_PASS_SERVICE" -w "$pku_pass" >/dev/null
+	unset pku_pass
+
+	echo "IAAA 凭据已保存到 macOS 钥匙串。"
+}
+
+_set_sudo_nopasswd() {
+	local openconnect_path
+	openconnect_path="$(command -v openconnect)"
+
+	if [[ -z "$openconnect_path" ]]; then
+		echo "openconnect 未安装，请先执行: brew install openconnect"
+		return 1
+	fi
+
+	# Configure only the minimum required commands for password-less sudo.
+	sudo tee /etc/sudoers.d/pkuvpn >/dev/null <<SUDOERS_EOF
+$USER ALL=(root) NOPASSWD: $openconnect_path, /usr/sbin/networksetup
+SUDOERS_EOF
+
+	sudo chmod 440 /etc/sudoers.d/pkuvpn
+	sudo visudo -cf /etc/sudoers.d/pkuvpn || return 1
+
+	echo "已配置 sudo 免密（仅限 openconnect 和 networksetup）。"
+}
+
+_start() {
+	local pku_user
+	local pku_pass
+	local openconnect_path
+	local log_file="$HOME/.pkuvpn.log"
+
+	openconnect_path="$(command -v openconnect)"
+
+	if [[ -z "$openconnect_path" ]]; then
+		echo "openconnect 未安装，请先执行: brew install openconnect"
+		return 1
+	fi
+
+	pku_user="$(security find-generic-password -a "$USER" -s "$PKUVPN_KEYCHAIN_USER_SERVICE" -w 2>/dev/null)"
+	pku_pass="$(security find-generic-password -a "$USER" -s "$PKUVPN_KEYCHAIN_PASS_SERVICE" -w 2>/dev/null)"
+
+	if [[ -z "$pku_user" || -z "$pku_pass" ]]; then
+		echo "未在钥匙串中找到 IAAA 凭据，请先运行: pkuvpn setup"
+		return 1
+	fi
+
+	# Clean up any existing openconnect processes to avoid conflicts
+	if pgrep -f "openconnect.*vpn.pku.edu.cn" >/dev/null 2>&1; then
+		echo "清理旧的 VPN 进程..."
+		sudo pkill -f "openconnect.*vpn.pku.edu.cn" || true
+		sleep 1
+	fi
+
+	echo "连接 PKU VPN..."
+	echo "日志保存到: $log_file"
+	echo "请在提示后输入 Token Code，为手机号的4-7位"
+	echo "按 Ctrl+C 断开连接"
+	echo ""
+	
+	# Run openconnect in foreground with password and token input
+	# Save logs for debugging
+	(
+		echo "$pku_pass"
+		cat  # Pass through for token input and keep connection alive
+	) | if sudo -n true >/dev/null 2>&1; then
+		sudo -n "$openconnect_path" --protocol=pulse --no-dtls --user "$pku_user" https://vpn.pku.edu.cn 2>&1 | tee "$log_file"
+	else
+		sudo "$openconnect_path" --protocol=pulse --no-dtls --user "$pku_user" https://vpn.pku.edu.cn 2>&1 | tee "$log_file"
+	fi
+
+	unset pku_pass
+}
+
+_stop() {
+	echo "正在断开 PKU VPN..."
+	
+	# Find and kill openconnect processes
+	local pids=$(pgrep -f "openconnect.*vpn.pku.edu.cn")
+	if [[ -z "$pids" ]]; then
+		echo "未找到运行中的 VPN 连接"
+		return 0
+	fi
+	
+	# Kill processes gracefully
+	for pid in $pids; do
+		echo "终止 openconnect 进程 (PID: $pid)"
+		if sudo -n true >/dev/null 2>&1; then
+			sudo -n kill -TERM "$pid" 2>/dev/null || true
+		else
+			sudo kill -TERM "$pid" 2>/dev/null || true
+		fi
+	done
+	
+	# Wait for graceful shutdown
+	sleep 2
+	
+	# Force kill if still running
+	for pid in $pids; do
+		if ps -p "$pid" >/dev/null 2>&1; then
+			if sudo -n true >/dev/null 2>&1; then
+				sudo -n kill -9 "$pid" 2>/dev/null || true
+			else
+				sudo kill -9 "$pid" 2>/dev/null || true
+			fi
+		fi
+	done
+	
+	echo "✓ VPN 已断开"
+}
+
+# Entry point
+main "$@"
