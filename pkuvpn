@@ -89,6 +89,7 @@ _start() {
 	local pku_pass
 	local openconnect_path
 	local log_file="$HOME/.pkuvpn.log"
+	local input_pid
 
 	openconnect_path="$(command -v openconnect)"
 
@@ -118,8 +119,10 @@ _start() {
 	echo "按 Ctrl+C 断开连接"
 	echo ""
 	
+	# Set trap to clean up processes on exit
+	trap 'kill %1 %2 2>/dev/null; return' INT TERM EXIT
+	
 	# Run openconnect in foreground with password and token input
-	# Save logs for debugging
 	(
 		echo "$pku_pass"
 		cat  # Pass through for token input and keep connection alive
@@ -127,7 +130,10 @@ _start() {
 		sudo -n "$openconnect_path" --protocol=pulse --no-dtls --user "$pku_user" https://vpn.pku.edu.cn 2>&1 | tee "$log_file"
 	else
 		sudo "$openconnect_path" --protocol=pulse --no-dtls --user "$pku_user" https://vpn.pku.edu.cn 2>&1 | tee "$log_file"
-	fi
+	fi &
+	
+	wait
+	trap - INT TERM EXIT
 
 	unset pku_pass
 }
@@ -135,38 +141,21 @@ _start() {
 _stop() {
 	echo "正在断开 PKU VPN..."
 	
-	# Find and kill openconnect processes
-	local pids=$(pgrep -f "openconnect.*vpn.pku.edu.cn")
-	if [[ -z "$pids" ]]; then
+	# Use sudo pkill to terminate openconnect processes (need sudo since openconnect runs as root)
+	if sudo pkill -f "openconnect" >/dev/null 2>&1; then
+		echo "已发送终止信号"
+		sleep 2
+		
+		# Force kill if still running
+		if pgrep -f "openconnect" >/dev/null 2>&1; then
+			sudo pkill -9 -f "openconnect"
+			echo "已强制终止"
+		fi
+		echo "✓ VPN 已断开"
+	else
 		echo "未找到运行中的 VPN 连接"
 		return 0
 	fi
-	
-	# Kill processes gracefully
-	for pid in $pids; do
-		echo "终止 openconnect 进程 (PID: $pid)"
-		if sudo -n true >/dev/null 2>&1; then
-			sudo -n kill -TERM "$pid" 2>/dev/null || true
-		else
-			sudo kill -TERM "$pid" 2>/dev/null || true
-		fi
-	done
-	
-	# Wait for graceful shutdown
-	sleep 2
-	
-	# Force kill if still running
-	for pid in $pids; do
-		if ps -p "$pid" >/dev/null 2>&1; then
-			if sudo -n true >/dev/null 2>&1; then
-				sudo -n kill -9 "$pid" 2>/dev/null || true
-			else
-				sudo kill -9 "$pid" 2>/dev/null || true
-			fi
-		fi
-	done
-	
-	echo "✓ VPN 已断开"
 }
 
 # Entry point

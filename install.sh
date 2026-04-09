@@ -25,7 +25,7 @@ ln -s "$PKUVPN_SCRIPT" "$SYMLINK_PATH"
 
 echo "✓ pkuvpn 命令已安装到 $SYMLINK_PATH"
 echo ""
-echo "请确保 ~/.local/bin 在你的 PATH 中。"
+echo "安装完成！请确保 ~/.local/bin 在你的 PATH 中。"
 echo "如果之前没有添加，请在 ~/.zshrc 中添加以下内容："
 echo ""
 echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
